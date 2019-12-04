@@ -7,8 +7,8 @@ module Lib
 
 import Debug.Trace
 
-import Data.Function ((&))
-import Data.List (intersect)
+import Data.Function (on, (&))
+import Data.List (intersectBy)
 import Control.Arrow (first, second)
 
 type Cable = [Step]
@@ -26,11 +26,13 @@ o = (0, 0)
 
 intersection :: (Cable, Cable) -> Int
 intersection (cable1, cable2) =
-  fmap (concat . fromCable o) [cable1, cable2]
+  fmap (zip [0..] . concat . fromCable o) [cable1, cable2]
   & toTuple
-  & uncurry intersect
+  & uncurry intersectBy (compare `on` snd)
   & fmap distanceFromOrigin
   & minimum
+
+
 
 toTuple :: [a] -> (a, a)
 toTuple [a, b] = (a, b)
