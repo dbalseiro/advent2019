@@ -37,6 +37,7 @@ executables:
     - -with-rtsopts=-N
     dependencies:
     - puz2
+    - split
 
 tests:
   puz2-test:
