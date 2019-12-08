@@ -21,6 +21,8 @@ description:         Please see the README on GitHub at <https://github.com/dbal
 
 dependencies:
 - base >= 4.7 && < 5
+- mtl
+
 
 ghc-options:
 - -Wall
@@ -32,7 +34,6 @@ library:
   source-dirs: src
   dependencies:
     - array
-    - mtl
 
 executables:
   puz2-exe:

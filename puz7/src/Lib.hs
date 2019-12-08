@@ -2,17 +2,16 @@
 
 module Lib (compute) where
 
-import Data.Array (listArray, (!), (//), Array)
-
-import Control.Monad.State
-import Control.Monad.Identity
+import Data.Array (elems, listArray, (!), (//), Array)
+import Control.Monad.State.Lazy
+import Control.Arrow (second)
 
 class Monad m => IntCode m where
   getInput :: m Integer
   putOutput :: Integer -> m ()
 
 instance IntCode IO where
-  getInput = putStr "? " >> readLn
+  getInput = readLn
   putOutput = print
 
 instance IntCode (StateT [Integer] IO) where
@@ -92,15 +91,16 @@ getParam :: Param -> Array Integer Integer -> Integer
 getParam (Immediate i) _ = i
 getParam (Position pos) mem = mem!pos
 
-compute :: IntCode m => [Integer] -> m ()
-compute l =
+compute :: IntCode m => (Pointer, [Integer]) -> m (Either (Pointer, [Integer]) ())
+compute (p, l) =
   let memory = listArray (0, fromIntegral $ length l - 1) l
-   in op (0, memory)
+   in op (p, memory)
 
-op :: IntCode m => Memory -> m ()
-op m = do
+op :: IntCode m => Memory -> m (Either (Pointer, [Integer]) ())
+op m =
   let instruction = readInstruction m
-  case instruction of
-    Halt -> return ()
-    _    -> execute instruction m >>= op
+   in case instruction of
+        Halt -> return (Right ())
+        Output _ -> execute instruction m >>= return . Left . second elems
+        _ -> execute instruction m >>= op
 
