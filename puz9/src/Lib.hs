@@ -1,9 +1,15 @@
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE NamedFieldPuns #-}
 
 module Lib (compute) where
 
-import Data.Array (listArray, (!), (//), Array)
+import Data.Array (listArray, (!), (//), Array, Ix)
 import Control.Monad.State.Lazy
+
+(!.) :: Ix i => Array i e -> i -> e
+(!.) = (!)
 
 class Monad m => IntCode m where
   getInput :: m Integer
@@ -20,10 +26,6 @@ instance IntCode (StateT [Integer] IO) where
     return x
   putOutput = put . pure
 
-type IntCodeT m = StateT Base m
-
-type Memory = (Pointer, Array Integer Integer)
-
 data Instruction
   = Halt
   | Add Param Param Param
@@ -38,44 +40,72 @@ data Instruction
 data Param = Immediate Integer | Position Integer | Relative Integer
 
 type Pointer = Integer
+
 type Base = Integer
 
-execute :: IntCode m => Base -> Instruction -> Memory -> m Memory
-execute base instruction m@(pointer, mem) =
-  case instruction of
-    Halt -> return m
-    (Add p1 p2 pout) -> save 4 pout (getParam base p1 mem + getParam base p2 mem)
-    (Mul p1 p2 pout) -> save 4 pout (getParam base p1 mem * getParam base p2 mem)
-    (Input pout) -> getInput >>= save 2 pout
-    (Output pout) -> putOutput (getParam base pout mem) >> return (pointer + 2, mem)
-    (JumpT p1 p2) ->
-      let newPointer = if getParam base p1 mem /= 0 then getParam base p2 mem else pointer+3
-       in return (newPointer, mem)
-    (JumpF p1 p2) ->
-      let newPointer = if getParam base p1 mem == 0 then getParam base p2 mem else pointer+3
-       in return (newPointer, mem)
-    (LessThan p1 p2 pout) ->
-      let value = if getParam base p1 mem < getParam base p2 mem then 1 else 0
-       in save 4 pout value
-    (Equals p1 p2 pout) ->
-      let value = if getParam base p1 mem == getParam base p2 mem then 1 else 0
-       in save 4 pout value
-  where
-    save offset pout value = return $ (pointer + offset, mem // [(getParam base pout mem, value)])
+type Memory = Array Integer Integer
 
-readInstruction :: Memory -> Instruction
-readInstruction (pointer, mem) =
-  let (a,b,c,d,e) = parseOpcode . takeLast 5 . ("00000"++) . show $ mem!pointer
+data Registers = Registers { base :: Base, pc :: Pointer, mem :: Memory }
+
+type IntCodeT m = StateT Registers m
+
+increment :: IntCode m => Pointer -> IntCodeT m ()
+increment offset = do
+  registers@Registers{pc} <- get
+  put $ registers { pc = pc + offset }
+
+save :: IntCode m => Pointer -> Param -> Integer -> IntCodeT m ()
+save offset pout value = do
+  registers@Registers{..} <- get
+  idx <- getParam pout
+  put $ registers
+    { mem = mem // [(idx, value)]
+    , pc = pc + offset
+    }
+
+execute :: IntCode m => Instruction -> IntCodeT m ()
+execute instruction = do
+  registers@Registers{..} <- get
+  case instruction of
+    Halt -> return ()
+    (Add p1 p2 pout) -> ((+) <$> getParam p1 <*> getParam p2) >>= save 4 pout
+    (Mul p1 p2 pout) -> ((*) <$> getParam p1 <*> getParam p2) >>= save 4 pout
+    (Input pout) -> save 2 pout =<< lift getInput
+    (Output pout) -> getParam pout >>= lift . putOutput >> increment 2
+    (JumpT p1 p2) -> do
+      test <- getParam p1
+      if test /= 0
+         then do
+           pc' <- getParam p2
+           put $ registers { pc = pc' }
+         else increment 3
+    (JumpF p1 p2) -> do
+      test <- getParam p1
+      if test == 0
+         then do
+           pc' <- getParam p2
+           put $ registers { pc = pc' }
+         else increment 3
+    (LessThan p1 p2 pout) -> do
+      test <- (<) <$> getParam p1 <*> getParam p2
+      save 4 pout (if test then 1 else 0)
+    (Equals p1 p2 pout) -> do
+      test <- (==) <$> getParam p1 <*> getParam p2
+      save 4 pout (if test then 1 else 0)
+
+readInstruction :: Pointer -> Memory -> Instruction
+readInstruction pc mem =
+  let (a,b,c,d,e) = parseOpcode . takeLast 5 . ("00000"++) . show $ mem!.pc
    in case [d,e] of
         "99" -> Halt
-        "01" -> Add (mkParam c (mem!(pointer+1))) (mkParam b (mem!(pointer+2))) (mkParam a (mem!(pointer+3)))
-        "02" -> Mul (mkParam c (mem!(pointer+1))) (mkParam b (mem!(pointer+2))) (mkParam a (mem!(pointer+3)))
-        "03" -> Input (mkParam c (mem!(pointer+1)))
-        "04" -> Output (mkParam c (mem!(pointer+1)))
-        "05" -> JumpT (mkParam c (mem!(pointer+1))) (mkParam b (mem!(pointer+2)))
-        "06" -> JumpF (mkParam c (mem!(pointer+1))) (mkParam b (mem!(pointer+2)))
-        "07" -> LessThan (mkParam c (mem!(pointer+1))) (mkParam b (mem!(pointer+2))) (mkParam a (mem!(pointer+3)))
-        "08" -> Equals (mkParam c (mem!(pointer+1))) (mkParam b (mem!(pointer+2))) (mkParam a (mem!(pointer+3)))
+        "01" -> Add (mkParam c (mem!.(pc+1))) (mkParam b (mem!.(pc+2))) (mkParam a (mem!.(pc+3)))
+        "02" -> Mul (mkParam c (mem!.(pc+1))) (mkParam b (mem!.(pc+2))) (mkParam a (mem!.(pc+3)))
+        "03" -> Input (mkParam c (mem!.(pc+1)))
+        "04" -> Output (mkParam c (mem!.(pc+1)))
+        "05" -> JumpT (mkParam c (mem!.(pc+1))) (mkParam b (mem!.(pc+2)))
+        "06" -> JumpF (mkParam c (mem!.(pc+1))) (mkParam b (mem!.(pc+2)))
+        "07" -> LessThan (mkParam c (mem!.(pc+1))) (mkParam b (mem!.(pc+2))) (mkParam a (mem!.(pc+3)))
+        "08" -> Equals (mkParam c (mem!.(pc+1))) (mkParam b (mem!.(pc+2))) (mkParam a (mem!.(pc+3)))
         oc   -> error ("Invalid Opcode: " ++ oc)
   where
     mkParam '0' i = Position i
@@ -89,20 +119,24 @@ readInstruction (pointer, mem) =
 takeLast :: Int -> [a] -> [a]
 takeLast n = reverse . take n . reverse
 
-getParam :: Base -> Param -> Array Integer Integer -> Integer
-getParam _ (Immediate i) _ = i
-getParam _ (Position pos) mem = mem!pos
-getParam base (Relative offset) mem = mem!(base+offset)
+getParam :: IntCode m => Param -> IntCodeT m Integer
+getParam p = do
+  Registers{..} <- get
+  return $ case p of
+    Immediate i -> i
+    Position pos -> mem!.pos
+    Relative offset -> mem!.(base+offset)
 
-compute :: IntCode m => Base -> (Pointer, [Integer]) -> m (Either (Pointer, [Integer]) ())
-compute base (p, l) =
+compute :: IntCode m => Base -> Pointer -> [Integer] -> m ()
+compute base pointer l =
   let memory = listArray (0, fromIntegral $ length l - 1) l
-   in op base (p, memory)
+   in void $ runStateT op (Registers base pointer memory)
 
-op :: IntCode m => Base -> Memory -> m (Either (Pointer, [Integer]) ())
-op base m =
-  let instruction = readInstruction m
-   in case instruction of
-        Halt -> return (Right ())
-        _ -> execute base instruction m >>= op base
+op :: IntCode m => IntCodeT m ()
+op = do
+  Registers{..} <- get
+  let instruction = readInstruction pc mem
+  case instruction of
+    Halt -> return ()
+    _ -> execute instruction >> op
 
